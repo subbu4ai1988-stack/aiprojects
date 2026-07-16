@@ -37,3 +37,7 @@ class QuestionIn(BaseModel):
 
 class QuestionsIn(BaseModel):
     questions: list[QuestionIn] = Field(min_length=1)
+
+
+class BoardPublishIn(BaseModel):
+    boards: list[str] = Field(min_length=1)

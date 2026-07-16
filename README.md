@@ -53,3 +53,10 @@ npm run build
 - Local video files are stored under `backend/data/media` and exposed only through the application server.
 - Written transcripts or summaries are analyzed into per-question scores, an overall recommendation, and a confidence score.
 - Recruiters can review recordings, transcripts, and the consolidated assessment report in one screen.
+
+## Phase 3 distribution and communications
+
+- Open jobs can be distributed to LinkedIn, Indeed, and Glassdoor through local adapter simulations.
+- Each job-board operation stores an external reference, confirmation status, and timestamp.
+- Interview invitations are delivered through a local outbox adapter with recipient, subject, secure link, provider, and delivery status.
+- The adapter boundaries can be replaced with production job-board and SMTP/email-provider integrations without changing the recruiter workflow.

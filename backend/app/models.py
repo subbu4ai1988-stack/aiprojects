@@ -71,3 +71,26 @@ class Feedback(Base):
     confidence_score: Mapped[float] = mapped_column(Float)
     interview: Mapped[Interview] = relationship(back_populates="feedback")
 
+
+
+class JobPosting(Base):
+    __tablename__ = "job_postings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    board: Mapped[str] = mapped_column(String(60))
+    external_id: Mapped[str] = mapped_column(String(120))
+    external_url: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(30), default="posted")
+    posted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class EmailDelivery(Base):
+    __tablename__ = "email_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
+    recipient: Mapped[str] = mapped_column(String(255))
+    subject: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(30), default="sent")
+    provider: Mapped[str] = mapped_column(String(60), default="local-outbox")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -12,8 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import Base, DATA_DIR, engine, get_db
-from .models import Application, Candidate, Feedback, Interview, Job, User
-from .schemas import InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
+from .models import Application, Candidate, EmailDelivery, Feedback, Interview, Job, JobPosting, User
+from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
 
 SECRET = "local-development-secret-change-in-production"
@@ -94,6 +94,36 @@ def publish_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(cu
     return job
 
 
+
+@app.get("/api/jobs/{job_id}/postings")
+def list_postings(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    rows = db.scalars(select(JobPosting).where(JobPosting.job_id == job_id).order_by(JobPosting.id.desc())).all()
+    return [{"id": row.id, "board": row.board, "external_id": row.external_id, "external_url": row.external_url, "status": row.status, "posted_at": row.posted_at} for row in rows]
+
+
+@app.post("/api/jobs/{job_id}/postings")
+def publish_to_boards(job_id: int, payload: BoardPublishIn, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status != "open":
+        raise HTTPException(409, "Publish the job before posting it to job boards")
+    allowed = {"linkedin", "indeed", "glassdoor"}
+    requested = list(dict.fromkeys(board.lower() for board in payload.boards))
+    invalid = [board for board in requested if board not in allowed]
+    if invalid:
+        raise HTTPException(400, f"Unsupported job boards: {', '.join(invalid)}")
+    confirmations = []
+    for board in requested:
+        existing = db.scalar(select(JobPosting).where(JobPosting.job_id == job.id, JobPosting.board == board))
+        posting = existing or JobPosting(job_id=job.id, board=board, external_id=f"{board}-{job.id}-{token_urlsafe(5)}", external_url=f"https://jobs.example.local/{board}/{job.id}")
+        db.add(posting)
+        db.flush()
+        confirmations.append(posting)
+    db.commit()
+    return [{"id": row.id, "board": row.board, "external_id": row.external_id, "external_url": row.external_url, "status": row.status, "posted_at": row.posted_at} for row in confirmations]
+
+
 @app.post("/api/jobs/{job_id}/applications")
 async def add_application(job_id: int, name: Annotated[str, Form()], email: Annotated[str, Form()], resume: UploadFile = File(), db: Session = Depends(get_db), _: User = Depends(current_user)):
     job = db.get(Job, job_id)
@@ -160,6 +190,30 @@ def update_questions(application_id: int, payload: QuestionsIn, db: Session = De
     application.interview.status = "prepared"
     db.commit()
     return {"questions": application.interview.questions, "status": application.interview.status}
+
+
+
+@app.post("/api/applications/{application_id}/interview/send-invite")
+def send_interview_invite(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    application = db.get(Application, application_id)
+    if not application or not application.interview:
+        raise HTTPException(404, "Prepare the interview before sending an invitation")
+    interview = application.interview
+    url = f"http://127.0.0.1:5173/interview/{interview.token}"
+    subject = f"Your interview for {application.job.title}"
+    body = f"Hello {application.candidate.name},\n\nYou are invited to complete a one-way video interview for {application.job.title}.\n\nSecure interview link: {url}\n\nYou may re-record each answer once."
+    delivery = EmailDelivery(application_id=application.id, recipient=application.candidate.email, subject=subject, body=body, status="sent", provider="local-outbox")
+    db.add(delivery)
+    interview.status = "invited"
+    db.commit()
+    db.refresh(delivery)
+    return {"id": delivery.id, "recipient": delivery.recipient, "subject": delivery.subject, "status": delivery.status, "provider": delivery.provider, "sent_at": delivery.sent_at, "interview_url": url}
+
+
+@app.get("/api/applications/{application_id}/communications")
+def list_communications(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    rows = db.scalars(select(EmailDelivery).where(EmailDelivery.application_id == application_id).order_by(EmailDelivery.id.desc())).all()
+    return [{"id": row.id, "recipient": row.recipient, "subject": row.subject, "body": row.body, "status": row.status, "provider": row.provider, "sent_at": row.sent_at} for row in rows]
 
 
 @app.get("/api/interviews/{token}")
