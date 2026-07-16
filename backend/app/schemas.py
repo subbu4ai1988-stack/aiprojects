@@ -28,3 +28,12 @@ class AnswerIn(BaseModel):
 class InterviewAnswers(BaseModel):
     answers: list[AnswerIn]
 
+
+class QuestionIn(BaseModel):
+    text: str = Field(min_length=5)
+    category: str
+    difficulty: str
+
+
+class QuestionsIn(BaseModel):
+    questions: list[QuestionIn] = Field(min_length=1)

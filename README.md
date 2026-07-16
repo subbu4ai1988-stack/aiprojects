@@ -45,3 +45,11 @@ cd frontend
 npm run build
 ```
 
+
+## Phase 2 interview workflow
+
+- Recruiters can review, edit, add, or remove generated interview questions before sending an invite.
+- Candidates record browser-based video answers and may re-record each answer once.
+- Local video files are stored under `backend/data/media` and exposed only through the application server.
+- Written transcripts or summaries are analyzed into per-question scores, an overall recommendation, and a confidence score.
+- Recruiters can review recordings, transcripts, and the consolidated assessment report in one screen.
