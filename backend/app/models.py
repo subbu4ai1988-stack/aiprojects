@@ -1,0 +1,73 @@
+from datetime import datetime
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(30), default="recruiter")
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    department: Mapped[str] = mapped_column(String(120), default="")
+    location: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    ranking_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    applications: Mapped[list["Application"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+
+class Candidate(Base):
+    __tablename__ = "candidates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    phone: Mapped[str] = mapped_column(String(60), default="")
+    resume_path: Mapped[str] = mapped_column(String(500), default="")
+    parsed_resume_data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Application(Base):
+    __tablename__ = "applications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"))
+    status: Mapped[str] = mapped_column(String(30), default="applied")
+    match_score: Mapped[float] = mapped_column(Float, default=0)
+    ai_ranking_summary: Mapped[str] = mapped_column(Text, default="")
+    job: Mapped[Job] = relationship(back_populates="applications")
+    candidate: Mapped[Candidate] = relationship()
+    interview: Mapped["Interview | None"] = relationship(back_populates="application", uselist=False)
+
+
+class Interview(Base):
+    __tablename__ = "interviews"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), unique=True)
+    token: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    questions: Mapped[list] = mapped_column(JSON, default=list)
+    answers: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(30), default="invited")
+    application: Mapped[Application] = relationship(back_populates="interview")
+    feedback: Mapped["Feedback | None"] = relationship(back_populates="interview", uselist=False)
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), unique=True)
+    ai_generated_report: Mapped[str] = mapped_column(Text)
+    recommendation: Mapped[str] = mapped_column(String(20))
+    confidence_score: Mapped[float] = mapped_column(Float)
+    interview: Mapped[Interview] = relationship(back_populates="feedback")
+
