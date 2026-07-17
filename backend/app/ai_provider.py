@@ -59,6 +59,26 @@ class OpenAIProvider:
             timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45")),
             max_retries=2,
         )
+        self._usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "request_id": ""}
+
+    def _reset_usage(self) -> None:
+        self._usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "request_id": ""}
+
+    def _capture_usage(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens = int(getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)) or 0)
+            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            total_tokens = int(getattr(usage, "total_tokens", input_tokens + output_tokens) or 0)
+            self._usage["input_tokens"] += input_tokens
+            self._usage["output_tokens"] += output_tokens
+            self._usage["total_tokens"] += total_tokens
+        request_id = getattr(response, "_request_id", "")
+        if request_id:
+            self._usage["request_id"] = request_id
+
+    def usage_snapshot(self) -> dict:
+        return dict(self._usage)
 
     def _parse(self, schema: type[BaseModel], system: str, user: str) -> BaseModel:
         response = self.client.responses.parse(
@@ -69,11 +89,13 @@ class OpenAIProvider:
             ],
             text_format=schema,
         )
+        self._capture_usage(response)
         if response.output_parsed is None:
             raise RuntimeError("OpenAI response did not contain structured output")
         return response.output_parsed
 
     def parse_resume(self, text: str) -> dict:
+        self._reset_usage()
         profile = self._parse(
             ResumeProfile,
             "Extract a factual candidate profile from the supplied resume. Do not infer credentials that are not present.",
@@ -88,11 +110,14 @@ class OpenAIProvider:
         return numerator / denominator if denominator else 0.0
 
     def rank_resume(self, resume_text: str, job_description: str, required_skills: list[str]) -> tuple[float, str]:
+        self._reset_usage()
         job_context = f"Job description:\n{job_description}\nRequired skills: {', '.join(required_skills)}"
-        vectors = self.client.embeddings.create(
+        embedding_response = self.client.embeddings.create(
             model=self.embedding_model,
             input=[job_context[:30000], resume_text[:30000]],
-        ).data
+        )
+        self._capture_usage(embedding_response)
+        vectors = embedding_response.data
         semantic_score = max(0.0, min(100.0, (self._cosine(vectors[0].embedding, vectors[1].embedding) + 1) * 50))
         assessment = self._parse(
             MatchAssessment,
@@ -105,6 +130,7 @@ class OpenAIProvider:
         return score, f"{assessment.summary} Strengths: {strengths}. Gaps: {gaps}."
 
     def generate_questions(self, title: str, description: str) -> list[dict]:
+        self._reset_usage()
         result = self._parse(
             QuestionSet,
             "Create exactly six concise, job-relevant interview questions with a balanced mix of technical, behavioral, and situational categories and increasing difficulty.",
@@ -113,6 +139,7 @@ class OpenAIProvider:
         return [question.model_dump() for question in result.questions]
 
     def analyze_answers(self, answers: list[dict], description: str) -> tuple[str, str, float]:
+        self._reset_usage()
         formatted = "\n\n".join(
             f"Question {index}: {item.get('question', '')}\nAnswer: {item.get('answer', '') or '[No text answer supplied]'}"
             for index, item in enumerate(answers, 1)

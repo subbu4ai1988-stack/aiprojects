@@ -87,3 +87,34 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 Restart the backend after changing environment variables. Keep `.env` out of source control.
+
+## Phase 6 production readiness
+
+- Centralized environment configuration validates production secrets, trusted origins, upload limits, schema strategy, and administrator bootstrapping.
+- The database layer accepts `DATABASE_URL` for SQLite or PostgreSQL, with Alembic migrations for production deployments.
+- Live AI calls have application rate limits, a circuit breaker, a configurable monthly token budget, automatic local fallback, token/request-ID telemetry, and persistent audit records.
+- Production application parsing and ranking run through a durable database task queue and a separately scalable worker; local development stays synchronous by default.
+- A versioned local evaluation dataset checks that relevant resumes outrank unrelated resumes before deployment.
+- Administrators can view safe runtime configuration and AI usage metrics without access to API keys or prompt content.
+- Liveness and database readiness endpoints support container orchestration; API responses include request IDs and security headers.
+- Docker Compose provides PostgreSQL, the FastAPI service, and an Nginx-served frontend. GitHub Actions runs Python tests and the frontend build.
+
+### Database migrations
+
+For a new database:
+
+```powershell
+alembic upgrade head
+```
+
+Existing Phase 1–5 local SQLite databases continue using `AUTO_CREATE_SCHEMA=true`. After starting Phase 6 once, baseline that existing database with `alembic stamp head` before switching it to migration-managed operation.
+
+### Container deployment
+
+Set `POSTGRES_PASSWORD`, a unique `JWT_SECRET` of at least 32 characters, `BOOTSTRAP_ADMIN_EMAIL`, and a bootstrap administrator password of at least 12 characters. Then run:
+
+```powershell
+docker compose up --build
+```
+
+The production frontend is available at `http://localhost:8080`. OpenAI remains disabled unless `AI_PROVIDER=openai` and `OPENAI_API_KEY` are explicitly supplied.

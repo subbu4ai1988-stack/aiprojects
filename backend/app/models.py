@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -94,3 +94,31 @@ class EmailDelivery(Base):
     status: Mapped[str] = mapped_column(String(30), default="sent")
     provider: Mapped[str] = mapped_column(String(60), default="local-outbox")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class AIRequestLog(Base):
+    __tablename__ = "ai_request_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation: Mapped[str] = mapped_column(String(60), index=True)
+    provider: Mapped[str] = mapped_column(String(30), default="openai")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    input_chars: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    request_id: Mapped[str] = mapped_column(String(160), default="")
+    error: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+
+class AITask(Base):
+    __tablename__ = "ai_tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_type: Mapped[str] = mapped_column(String(60), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))

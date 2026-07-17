@@ -7,6 +7,7 @@ from docx import Document
 from pypdf import PdfReader
 
 from .ai_provider import get_ai_provider
+from .ai_runtime import run_ai_operation
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def parse_resume(text: str) -> dict:
     provider = get_ai_provider()
     if provider:
         try:
-            parsed = provider.parse_resume(text)
+            parsed = run_ai_operation("resume_parse", provider, lambda: provider.parse_resume(text), len(text))
             return {**parsed, "raw_text": text[:20000], "_ai_source": "openai"}
         except Exception:
             logger.exception("OpenAI resume parsing failed; using local fallback")
@@ -92,7 +93,7 @@ def rank_resume(resume_text: str, job_description: str, required_skills: list[st
     provider = get_ai_provider()
     if provider:
         try:
-            return provider.rank_resume(resume_text, job_description, required_skills)
+            return run_ai_operation("candidate_rank", provider, lambda: provider.rank_resume(resume_text, job_description, required_skills), len(resume_text) + len(job_description))
         except Exception:
             logger.exception("OpenAI candidate ranking failed; using local fallback")
     return _local_rank_resume(resume_text, job_description, required_skills)
@@ -102,7 +103,7 @@ def generate_questions(title: str, description: str) -> list[dict]:
     provider = get_ai_provider()
     if provider:
         try:
-            return provider.generate_questions(title, description)
+            return run_ai_operation("question_generation", provider, lambda: provider.generate_questions(title, description), len(title) + len(description))
         except Exception:
             logger.exception("OpenAI question generation failed; using local fallback")
     return _local_generate_questions(title, description)
@@ -112,7 +113,8 @@ def analyze_answers(answers: list[dict], description: str) -> tuple[str, str, fl
     provider = get_ai_provider()
     if provider:
         try:
-            return provider.analyze_answers(answers, description)
+            answer_chars = sum(len(str(item.get("answer", ""))) for item in answers)
+            return run_ai_operation("interview_assessment", provider, lambda: provider.analyze_answers(answers, description), answer_chars + len(description))
         except Exception:
             logger.exception("OpenAI interview assessment failed; using local fallback")
     return _local_analyze_answers(answers, description)

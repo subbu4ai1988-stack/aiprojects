@@ -1,0 +1,16 @@
+[
+  {
+    "name": "strong_python_backend_fit",
+    "job_description": "Build Python FastAPI services backed by PostgreSQL and deploy reliable APIs.",
+    "required_skills": ["Python", "FastAPI", "PostgreSQL"],
+    "strong_resume": "Backend engineer with 7 years of Python, FastAPI, PostgreSQL, API design, testing, and production deployment experience.",
+    "weak_resume": "Retail operations coordinator experienced in inventory planning, customer support, and vendor scheduling."
+  },
+  {
+    "name": "data_engineering_fit",
+    "job_description": "Develop SQL data pipelines, Python transformations, and cloud analytics workflows.",
+    "required_skills": ["SQL", "Python", "data pipelines"],
+    "strong_resume": "Data engineer using SQL and Python to build scheduled data pipelines, transformations, and cloud warehouse models.",
+    "weak_resume": "Graphic designer focused on brand systems, illustration, print layouts, and creative campaigns."
+  }
+]

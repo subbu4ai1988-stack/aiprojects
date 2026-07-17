@@ -1,10 +1,13 @@
 import hashlib
+import logging
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 import hmac
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
@@ -13,14 +16,37 @@ from sqlalchemy.orm import Session
 
 from .admin_models import JobAssignment
 from .ai_provider import ai_status
+from .config import settings
 from .database import Base, DATA_DIR, engine, get_db
 from .models import Application, Candidate, EmailDelivery, Feedback, Interview, Job, JobPosting, User
 from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
 from .phase4 import accessible_jobs, has_job_access, router as phase4_router
+from .phase6 import router as phase6_router
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
+from .tasks import enqueue_application
 
-SECRET = "local-development-secret-change-in-production"
-app = FastAPI(title="RecruitAI API", version="1.2.0")
+SECRET = settings.jwt_secret
+logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.auto_create_schema:
+        Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        if settings.bootstrap_demo_users:
+            if not db.scalar(select(User).where(User.email == "recruiter@recruitai.local")):
+                db.add(User(email="recruiter@recruitai.local", password_hash=hash_password("recruitai"), role="recruiter"))
+            if not db.scalar(select(User).where(User.email == "admin@recruitai.local")):
+                db.add(User(email="admin@recruitai.local", password_hash=hash_password("recruitai-admin"), role="admin"))
+        if settings.bootstrap_admin_email and not db.scalar(select(User).where(User.email == settings.bootstrap_admin_email)):
+            db.add(User(email=settings.bootstrap_admin_email, password_hash=hash_password(settings.bootstrap_admin_password), role="admin"))
+        db.commit()
+    yield
+
+
+app = FastAPI(title="RecruitAI API", version="1.3.0", lifespan=lifespan)
 
 
 def hash_password(password: str) -> str:
@@ -31,22 +57,24 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(hash_password(password), encoded)
 
 
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def operational_headers(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", token_urlsafe(12))[:160]
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=(self)"
+    return response
+
 MEDIA_DIR = DATA_DIR / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.include_router(phase4_router)
-
-
-@app.on_event("startup")
-def startup():
-    Base.metadata.create_all(engine)
-    with Session(engine) as db:
-        if not db.scalar(select(User).where(User.email == "recruiter@recruitai.local")):
-            db.add(User(email="recruiter@recruitai.local", password_hash=hash_password("recruitai"), role="recruiter"))
-        if not db.scalar(select(User).where(User.email == "admin@recruitai.local")):
-            db.add(User(email="admin@recruitai.local", password_hash=hash_password("recruitai-admin"), role="admin"))
-        db.commit()
+app.include_router(phase6_router)
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> User:
@@ -77,7 +105,9 @@ def login(payload: Login, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == payload.email))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
-    return {"access_token": jwt.encode({"sub": user.email, "role": user.role}, SECRET, algorithm="HS256"), "role": user.role}
+    expires = datetime.now(UTC) + timedelta(minutes=settings.access_token_minutes)
+    claims = {"sub": user.email, "role": user.role, "exp": expires}
+    return {"access_token": jwt.encode(claims, SECRET, algorithm="HS256"), "role": user.role, "expires_at": expires}
 
 
 @app.get("/api/jobs", response_model=list[JobOut])
@@ -152,7 +182,20 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
     upload_dir = DATA_DIR / "uploads"
     upload_dir.mkdir(exist_ok=True)
     path = upload_dir / f"{token_urlsafe(8)}{suffix}"
-    path.write_bytes(await resume.read())
+    content = await resume.read(settings.max_upload_bytes + 1)
+    if len(content) > settings.max_upload_bytes:
+        raise HTTPException(413, "Resume exceeds the configured upload limit")
+    path.write_bytes(content)
+    if settings.async_ai_jobs:
+        candidate = Candidate(name=name, email=email, phone="", resume_path=str(path), parsed_resume_data={"skills": [], "_ai_source": "queued"})
+        db.add(candidate)
+        db.flush()
+        application = Application(job_id=job.id, candidate_id=candidate.id, match_score=0, ai_ranking_summary="AI parsing and ranking queued")
+        db.add(application)
+        db.flush()
+        task = enqueue_application(db, application.id)
+        db.commit()
+        return {"id": application.id, "match_score": 0, "summary": application.ai_ranking_summary, "processing": True, "task_id": task.id}
     parsed = parse_resume(extract_resume(path))
     parsed["name"] = name
     parsed["email"] = email
@@ -270,7 +313,10 @@ async def upload_video_answer(token: str, question_index: int, video: UploadFile
     suffix = ".webm" if "webm" in content_type else ".mp4"
     filename = f"{token}-{question_index}-{attempts + 1}{suffix}"
     path = MEDIA_DIR / filename
-    path.write_bytes(await video.read())
+    content = await video.read(settings.max_upload_bytes + 1)
+    if len(content) > settings.max_upload_bytes:
+        raise HTTPException(413, "Video exceeds the configured upload limit")
+    path.write_bytes(content)
     answers[question_index] = {**answers[question_index], "question": interview.questions[question_index]["text"], "video_url": f"/media/{filename}", "recording_attempts": attempts + 1}
     interview.answers = answers
     interview.status = "in_progress"

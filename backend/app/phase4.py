@@ -9,10 +9,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .admin_models import JobAssignment
+from .config import settings
 from .database import get_db
 from .models import Application, Candidate, Interview, Job, User
 
-SECRET='local-development-secret-change-in-production'
+SECRET=settings.jwt_secret
 router=APIRouter(prefix='/api',tags=['administration'])
 
 

@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: recruitai
+      POSTGRES_USER: recruitai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recruitai -d recruitai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://recruitai:${POSTGRES_PASSWORD}@db:5432/recruitai
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      AUTO_CREATE_SCHEMA: "false"
+      BOOTSTRAP_DEMO_USERS: "false"
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Set BOOTSTRAP_ADMIN_PASSWORD}
+      AI_PROVIDER: ${AI_PROVIDER:-local}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-sol}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      AI_MAX_CALLS_PER_MINUTE: ${AI_MAX_CALLS_PER_MINUTE:-30}
+      AI_MONTHLY_TOKEN_BUDGET: ${AI_MONTHLY_TOKEN_BUDGET:-0}
+      ASYNC_AI_JOBS: "true"
+      AI_WORKER_MAX_ATTEMPTS: ${AI_WORKER_MAX_ATTEMPTS:-3}
+    volumes:
+      - recruitai_data:/app/backend/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+
+  worker:
+    build: .
+    command: ["python", "-m", "backend.worker"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://recruitai:${POSTGRES_PASSWORD}@db:5432/recruitai
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      BOOTSTRAP_DEMO_USERS: "false"
+      AI_PROVIDER: ${AI_PROVIDER:-local}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-sol}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      AI_MAX_CALLS_PER_MINUTE: ${AI_MAX_CALLS_PER_MINUTE:-30}
+      AI_MONTHLY_TOKEN_BUDGET: ${AI_MONTHLY_TOKEN_BUDGET:-0}
+      ASYNC_AI_JOBS: "true"
+      AI_WORKER_MAX_ATTEMPTS: ${AI_WORKER_MAX_ATTEMPTS:-3}
+    volumes:
+      - recruitai_data:/app/backend/data
+    depends_on:
+      api:
+        condition: service_healthy
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  recruitai_data:
