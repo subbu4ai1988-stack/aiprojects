@@ -60,3 +60,11 @@ npm run build
 - Each job-board operation stores an external reference, confirmation status, and timestamp.
 - Interview invitations are delivered through a local outbox adapter with recipient, subject, secure link, provider, and delivery status.
 - The adapter boundaries can be replaced with production job-board and SMTP/email-provider integrations without changing the recruiter workflow.
+
+## Phase 4 administration and analytics
+
+- Role-based job access supports administrators, recruiters, and hiring managers.
+- New jobs are automatically assigned to their creator; administrators can change assignments.
+- Recruiters can move candidates through applied, screening, interview, offer, and rejected stages.
+- The analytics dashboard shows job counts, application funnel, interview activity, match score, and offer rate.
+- Administrator login: `admin@recruitai.local` / `recruitai-admin`.

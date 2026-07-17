@@ -11,9 +11,11 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .admin_models import JobAssignment
 from .database import Base, DATA_DIR, engine, get_db
 from .models import Application, Candidate, EmailDelivery, Feedback, Interview, Job, JobPosting, User
 from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
+from .phase4 import accessible_jobs, has_job_access, router as phase4_router
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
 
 SECRET = "local-development-secret-change-in-production"
@@ -32,6 +34,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http
 MEDIA_DIR = DATA_DIR / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+app.include_router(phase4_router)
 
 
 @app.on_event("startup")
@@ -40,7 +43,9 @@ def startup():
     with Session(engine) as db:
         if not db.scalar(select(User).where(User.email == "recruiter@recruitai.local")):
             db.add(User(email="recruiter@recruitai.local", password_hash=hash_password("recruitai"), role="recruiter"))
-            db.commit()
+        if not db.scalar(select(User).where(User.email == "admin@recruitai.local")):
+            db.add(User(email="admin@recruitai.local", password_hash=hash_password("recruitai-admin"), role="admin"))
+        db.commit()
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> User:
@@ -70,24 +75,27 @@ def login(payload: Login, db: Session = Depends(get_db)):
 
 
 @app.get("/api/jobs", response_model=list[JobOut])
-def list_jobs(db: Session = Depends(get_db), _: User = Depends(current_user)):
-    return list(db.scalars(select(Job).order_by(Job.id.desc())))
+def list_jobs(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return accessible_jobs(db, user)
 
 
 @app.post("/api/jobs", response_model=JobOut)
-def create_job(payload: JobIn, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def create_job(payload: JobIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = Job(**payload.model_dump())
     db.add(job)
+    db.flush()
+    db.add(JobAssignment(job_id=job.id, user_id=user.id))
     db.commit()
     db.refresh(job)
     return job
 
 
 @app.patch("/api/jobs/{job_id}/publish", response_model=JobOut)
-def publish_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def publish_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    if not has_job_access(db, user, job_id): raise HTTPException(403, "Job access denied")
     job.status = "open"
     db.commit()
     db.refresh(job)
@@ -96,16 +104,18 @@ def publish_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(cu
 
 
 @app.get("/api/jobs/{job_id}/postings")
-def list_postings(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def list_postings(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not has_job_access(db, user, job_id): raise HTTPException(403, "Job access denied")
     rows = db.scalars(select(JobPosting).where(JobPosting.job_id == job_id).order_by(JobPosting.id.desc())).all()
     return [{"id": row.id, "board": row.board, "external_id": row.external_id, "external_url": row.external_url, "status": row.status, "posted_at": row.posted_at} for row in rows]
 
 
 @app.post("/api/jobs/{job_id}/postings")
-def publish_to_boards(job_id: int, payload: BoardPublishIn, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def publish_to_boards(job_id: int, payload: BoardPublishIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    if not has_job_access(db, user, job_id): raise HTTPException(403, "Job access denied")
     if job.status != "open":
         raise HTTPException(409, "Publish the job before posting it to job boards")
     allowed = {"linkedin", "indeed", "glassdoor"}
@@ -125,10 +135,11 @@ def publish_to_boards(job_id: int, payload: BoardPublishIn, db: Session = Depend
 
 
 @app.post("/api/jobs/{job_id}/applications")
-async def add_application(job_id: int, name: Annotated[str, Form()], email: Annotated[str, Form()], resume: UploadFile = File(), db: Session = Depends(get_db), _: User = Depends(current_user)):
+async def add_application(job_id: int, name: Annotated[str, Form()], email: Annotated[str, Form()], resume: UploadFile = File(), db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    if not has_job_access(db, user, job_id): raise HTTPException(403, "Job access denied")
     suffix = Path(resume.filename or "resume").suffix.lower()
     if suffix not in {".pdf", ".docx"}:
         raise HTTPException(400, "Resume must be PDF or DOCX")
@@ -152,16 +163,18 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
 
 
 @app.get("/api/jobs/{job_id}/candidates")
-def ranked_candidates(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def ranked_candidates(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not has_job_access(db, user, job_id): raise HTTPException(403, "Job access denied")
     rows = db.scalars(select(Application).where(Application.job_id == job_id).order_by(Application.match_score.desc())).all()
     return [{"application_id": a.id, "name": a.candidate.name, "email": a.candidate.email, "status": a.status, "interview_status": a.interview.status if a.interview else None, "match_score": a.match_score, "summary": a.ai_ranking_summary, "skills": a.candidate.parsed_resume_data.get("skills", [])} for a in rows]
 
 
 @app.post("/api/applications/{application_id}/interview")
-def invite(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def invite(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
     if not application:
         raise HTTPException(404, "Application not found")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     interview = application.interview or Interview(application_id=application.id, token=token_urlsafe(24), questions=generate_questions(application.job.title, application.job.description))
     application.status = "interview"
     db.add(interview)
@@ -171,19 +184,21 @@ def invite(application_id: int, db: Session = Depends(get_db), _: User = Depends
 
 
 @app.get("/api/applications/{application_id}/interview")
-def recruiter_interview(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def recruiter_interview(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
     if not application or not application.interview:
         raise HTTPException(404, "Interview not found")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     interview = application.interview
     return {"token": interview.token, "url": f"http://127.0.0.1:5173/interview/{interview.token}", "questions": interview.questions, "status": interview.status}
 
 
 @app.put("/api/applications/{application_id}/interview/questions")
-def update_questions(application_id: int, payload: QuestionsIn, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def update_questions(application_id: int, payload: QuestionsIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
     if not application or not application.interview:
         raise HTTPException(404, "Interview not found")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     if application.interview.status not in {"invited", "prepared"}:
         raise HTTPException(409, "Questions cannot be changed after the interview starts")
     application.interview.questions = [q.model_dump() for q in payload.questions]
@@ -194,10 +209,11 @@ def update_questions(application_id: int, payload: QuestionsIn, db: Session = De
 
 
 @app.post("/api/applications/{application_id}/interview/send-invite")
-def send_interview_invite(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def send_interview_invite(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
     if not application or not application.interview:
         raise HTTPException(404, "Prepare the interview before sending an invitation")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     interview = application.interview
     url = f"http://127.0.0.1:5173/interview/{interview.token}"
     subject = f"Your interview for {application.job.title}"
@@ -211,7 +227,10 @@ def send_interview_invite(application_id: int, db: Session = Depends(get_db), _:
 
 
 @app.get("/api/applications/{application_id}/communications")
-def list_communications(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def list_communications(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    application = db.get(Application, application_id)
+    if not application: raise HTTPException(404, "Application not found")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     rows = db.scalars(select(EmailDelivery).where(EmailDelivery.application_id == application_id).order_by(EmailDelivery.id.desc())).all()
     return [{"id": row.id, "recipient": row.recipient, "subject": row.subject, "body": row.body, "status": row.status, "provider": row.provider, "sent_at": row.sent_at} for row in rows]
 
@@ -274,9 +293,10 @@ def submit_answers(token: str, payload: InterviewAnswers, db: Session = Depends(
 
 
 @app.get("/api/applications/{application_id}/feedback")
-def get_feedback(application_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+def get_feedback(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
     if not application or not application.interview or not application.interview.feedback:
         raise HTTPException(404, "Feedback not available")
+    if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     f = application.interview.feedback
     return {"report": f.ai_generated_report, "recommendation": f.recommendation, "confidence_score": f.confidence_score, "answers": application.interview.answers}
