@@ -1,9 +1,14 @@
+import logging
 import re
 from collections import Counter
 from pathlib import Path
 
 from docx import Document
 from pypdf import PdfReader
+
+from .ai_provider import get_ai_provider
+
+logger = logging.getLogger(__name__)
 
 STOP = {"and", "the", "with", "for", "that", "from", "this", "have", "will", "your", "you", "our", "are", "job", "role"}
 
@@ -20,7 +25,7 @@ def keywords(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-zA-Z][a-zA-Z+#.]{2,}", text.lower()) if w not in STOP}
 
 
-def parse_resume(text: str) -> dict:
+def _local_parse_resume(text: str) -> dict:
     email = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)
     phone = re.search(r"(?:\+?\d[\d\s().-]{7,}\d)", text)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -30,7 +35,7 @@ def parse_resume(text: str) -> dict:
     return {"name": lines[0][:160] if lines else "Unknown Candidate", "email": email.group(0) if email else "", "phone": phone.group(0) if phone else "", "skills": skills[:12], "years_experience": max(years, default=0), "raw_text": text[:20000]}
 
 
-def rank_resume(resume_text: str, job_description: str, required_skills: list[str]) -> tuple[float, str]:
+def _local_rank_resume(resume_text: str, job_description: str, required_skills: list[str]) -> tuple[float, str]:
     job_terms = keywords(job_description) | {s.lower() for s in required_skills}
     resume_terms = keywords(resume_text)
     matched = sorted(job_terms & resume_terms)
@@ -42,7 +47,7 @@ def rank_resume(resume_text: str, job_description: str, required_skills: list[st
     return score, summary
 
 
-def generate_questions(title: str, description: str) -> list[dict]:
+def _local_generate_questions(title: str, description: str) -> list[dict]:
     focus = sorted(keywords(description))[:4]
     topic = ", ".join(focus) or title
     return [
@@ -55,7 +60,7 @@ def generate_questions(title: str, description: str) -> list[dict]:
     ]
 
 
-def analyze_answers(answers: list[dict], description: str) -> tuple[str, str, float]:
+def _local_analyze_answers(answers: list[dict], description: str) -> tuple[str, str, float]:
     target = keywords(description)
     sections, scores = [], []
     for index, item in enumerate(answers, 1):
@@ -70,3 +75,44 @@ def analyze_answers(answers: list[dict], description: str) -> tuple[str, str, fl
     confidence = round(min(0.95, 0.55 + len(answers) * 0.05), 2)
     return "\n".join(sections + [f"Overall score: {overall}/100"]), recommendation, confidence
 
+
+
+def parse_resume(text: str) -> dict:
+    provider = get_ai_provider()
+    if provider:
+        try:
+            parsed = provider.parse_resume(text)
+            return {**parsed, "raw_text": text[:20000], "_ai_source": "openai"}
+        except Exception:
+            logger.exception("OpenAI resume parsing failed; using local fallback")
+    return {**_local_parse_resume(text), "_ai_source": "local"}
+
+
+def rank_resume(resume_text: str, job_description: str, required_skills: list[str]) -> tuple[float, str]:
+    provider = get_ai_provider()
+    if provider:
+        try:
+            return provider.rank_resume(resume_text, job_description, required_skills)
+        except Exception:
+            logger.exception("OpenAI candidate ranking failed; using local fallback")
+    return _local_rank_resume(resume_text, job_description, required_skills)
+
+
+def generate_questions(title: str, description: str) -> list[dict]:
+    provider = get_ai_provider()
+    if provider:
+        try:
+            return provider.generate_questions(title, description)
+        except Exception:
+            logger.exception("OpenAI question generation failed; using local fallback")
+    return _local_generate_questions(title, description)
+
+
+def analyze_answers(answers: list[dict], description: str) -> tuple[str, str, float]:
+    provider = get_ai_provider()
+    if provider:
+        try:
+            return provider.analyze_answers(answers, description)
+        except Exception:
+            logger.exception("OpenAI interview assessment failed; using local fallback")
+    return _local_analyze_answers(answers, description)

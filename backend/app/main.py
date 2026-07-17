@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .admin_models import JobAssignment
+from .ai_provider import ai_status
 from .database import Base, DATA_DIR, engine, get_db
 from .models import Application, Candidate, EmailDelivery, Feedback, Interview, Job, JobPosting, User
 from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
@@ -19,7 +20,7 @@ from .phase4 import accessible_jobs, has_job_access, router as phase4_router
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
 
 SECRET = "local-development-secret-change-in-production"
-app = FastAPI(title="RecruitAI API", version="1.1.0")
+app = FastAPI(title="RecruitAI API", version="1.2.0")
 
 
 def hash_password(password: str) -> str:
@@ -64,6 +65,11 @@ def current_user(authorization: Annotated[str | None, Header()] = None, db: Sess
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/ai/status")
+def get_ai_status(user: User = Depends(current_user)):
+    return ai_status()
 
 
 @app.post("/api/auth/login")

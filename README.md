@@ -29,8 +29,8 @@ Open `http://127.0.0.1:5173`. The Vite development server proxies `/api` to the 
 
 - SQLite stores application data in `backend/data/recruitai.db`.
 - Uploaded resumes are stored under `backend/data/uploads`.
-- Resume parsing, matching, question generation, and feedback use deterministic local logic so development requires no cloud account.
-- The service boundary in `backend/app/services.py` is ready for OpenAI/Gemini, S3, Transcribe, and job-board adapters.
+- Resume parsing, matching, question generation, and feedback use deterministic local logic by default, so development requires no cloud account.
+- The service boundary in `backend/app/services.py` automatically routes to OpenAI when configured and falls back locally if the provider is unavailable.
 
 ## Demo login
 
@@ -68,3 +68,22 @@ npm run build
 - Recruiters can move candidates through applied, screening, interview, offer, and rejected stages.
 - The analytics dashboard shows job counts, application funnel, interview activity, match score, and offer rate.
 - Administrator login: `admin@recruitai.local` / `recruitai-admin`.
+
+## Phase 5 production AI
+
+- OpenAI structured outputs provide typed resume extraction, job-fit assessment, interview questions, and interview feedback.
+- Semantic candidate matching combines `text-embedding-3-small` similarity with a structured evidence-based assessment.
+- Every OpenAI operation automatically falls back to local deterministic logic if credentials are absent or the provider is unavailable.
+- The recruiter header shows the active provider, configured reasoning model, embedding model, and fallback state without exposing credentials.
+- Provider tests use fakes and do not make paid API calls.
+
+To enable OpenAI, copy `.env.example` to `.env`, then set:
+
+```dotenv
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+Restart the backend after changing environment variables. Keep `.env` out of source control.
