@@ -22,6 +22,7 @@ from .models import Application, Candidate, EmailDelivery, Feedback, Interview, 
 from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
 from .phase4 import accessible_jobs, has_job_access, router as phase4_router
 from .phase6 import router as phase6_router
+from .privacy import backfill_candidate_privacy, ensure_candidate_privacy, router as privacy_router
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
 from .tasks import enqueue_application
 
@@ -42,11 +43,12 @@ async def lifespan(_app: FastAPI):
                 db.add(User(email="admin@recruitai.local", password_hash=hash_password("recruitai-admin"), role="admin"))
         if settings.bootstrap_admin_email and not db.scalar(select(User).where(User.email == settings.bootstrap_admin_email)):
             db.add(User(email=settings.bootstrap_admin_email, password_hash=hash_password(settings.bootstrap_admin_password), role="admin"))
+        backfill_candidate_privacy(db)
         db.commit()
     yield
 
 
-app = FastAPI(title="RecruitAI API", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="RecruitAI API", version="1.4.0", lifespan=lifespan)
 
 
 def hash_password(password: str) -> str:
@@ -75,6 +77,7 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.include_router(phase4_router)
 app.include_router(phase6_router)
+app.include_router(privacy_router)
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> User:
@@ -171,7 +174,7 @@ def publish_to_boards(job_id: int, payload: BoardPublishIn, db: Session = Depend
 
 
 @app.post("/api/jobs/{job_id}/applications")
-async def add_application(job_id: int, name: Annotated[str, Form()], email: Annotated[str, Form()], resume: UploadFile = File(), db: Session = Depends(get_db), user: User = Depends(current_user)):
+async def add_application(job_id: int, name: Annotated[str, Form()], email: Annotated[str, Form()], resume: UploadFile = File(), consent: Annotated[bool, Form()] = True, db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -185,11 +188,14 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
     content = await resume.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(413, "Resume exceeds the configured upload limit")
+    if not consent:
+        raise HTTPException(400, "Candidate consent is required before processing personal data")
     path.write_bytes(content)
     if settings.async_ai_jobs:
         candidate = Candidate(name=name, email=email, phone="", resume_path=str(path), parsed_resume_data={"skills": [], "_ai_source": "queued"})
         db.add(candidate)
         db.flush()
+        ensure_candidate_privacy(db, candidate.id, consent)
         application = Application(job_id=job.id, candidate_id=candidate.id, match_score=0, ai_ranking_summary="AI parsing and ranking queued")
         db.add(application)
         db.flush()
@@ -202,6 +208,7 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
     candidate = Candidate(name=name, email=email, phone=parsed.get("phone", ""), resume_path=str(path), parsed_resume_data=parsed)
     db.add(candidate)
     db.flush()
+    ensure_candidate_privacy(db, candidate.id, consent)
     params = job.ranking_params or {}
     score, summary = rank_resume(parsed.get("raw_text", ""), job.description, params.get("required_skills", []))
     application = Application(job_id=job.id, candidate_id=candidate.id, match_score=score, ai_ranking_summary=summary)

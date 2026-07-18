@@ -45,6 +45,9 @@ class Settings:
     async_ai_jobs: bool
     ai_worker_poll_seconds: int
     ai_worker_max_attempts: int
+    candidate_retention_days: int
+    privacy_auto_delete: bool
+    privacy_sweep_interval_seconds: int
 
     @property
     def is_production(self) -> bool:
@@ -81,6 +84,9 @@ class Settings:
             async_ai_jobs=_boolean("ASYNC_AI_JOBS", False),
             ai_worker_poll_seconds=_integer("AI_WORKER_POLL_SECONDS", 2, 1),
             ai_worker_max_attempts=_integer("AI_WORKER_MAX_ATTEMPTS", 3, 1),
+            candidate_retention_days=_integer("CANDIDATE_RETENTION_DAYS", 365, 1),
+            privacy_auto_delete=_boolean("PRIVACY_AUTO_DELETE", False),
+            privacy_sweep_interval_seconds=_integer("PRIVACY_SWEEP_INTERVAL_SECONDS", 3600, 60),
         )
         settings.validate()
         return settings
@@ -113,6 +119,9 @@ class Settings:
             "ai_circuit_reset_seconds": self.ai_circuit_reset_seconds,
             "async_ai_jobs": self.async_ai_jobs,
             "ai_worker_max_attempts": self.ai_worker_max_attempts,
+            "candidate_retention_days": self.candidate_retention_days,
+            "privacy_auto_delete": self.privacy_auto_delete,
+            "privacy_sweep_interval_seconds": self.privacy_sweep_interval_seconds,
         }
 
 

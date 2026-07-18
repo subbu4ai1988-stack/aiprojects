@@ -118,3 +118,20 @@ docker compose up --build
 ```
 
 The production frontend is available at `http://localhost:8080`. OpenAI remains disabled unless `AI_PROVIDER=openai` and `OPENAI_API_KEY` are explicitly supplied.
+## Phase 7 privacy and compliance
+
+- Every candidate ingestion records consent, legal basis, and a configurable retention deadline.
+- Administrators can review privacy status, export a complete candidate data package, apply legal holds, and permanently delete candidate records and stored files.
+- Privacy exports, policy updates, and deletions are recorded in a non-PII audit ledger using hashed subject references.
+- Retention enforcement supports a safe preview and an explicit administrator run. The worker can also enforce overdue deletion automatically when `PRIVACY_AUTO_DELETE=true`.
+- Candidate deletion removes applications, interviews, feedback, communications, queued AI tasks, resumes, and recorded interview media while preserving the privacy audit event.
+
+Privacy configuration:
+
+```dotenv
+CANDIDATE_RETENTION_DAYS=365
+PRIVACY_AUTO_DELETE=false
+PRIVACY_SWEEP_INTERVAL_SECONDS=3600
+```
+
+Automatic deletion is disabled by default so administrators can review the retention preview and legal holds before enabling it. The Docker admin console exposes the active policy without exposing secrets.
