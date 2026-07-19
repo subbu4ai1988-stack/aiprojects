@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import get_db
+from .integration_models import IntegrationEvent
 from .models import AIRequestLog, AITask, Application, User
 from .phase4 import has_job_access, require_admin, session_user
 
@@ -68,6 +69,32 @@ def ai_usage(days: int = 30, db: Session = Depends(get_db), _: User = Depends(re
                 "duration_ms": row.duration_ms,
                 "total_tokens": row.total_tokens,
                 "request_id": row.request_id,
+                "created_at": row.created_at,
+            }
+            for row in rows[:20]
+        ],
+    }
+@router.get("/admin/integrations")
+def integration_activity(limit: int = 50, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    limit = max(1, min(limit, 200))
+    rows = list(db.scalars(select(IntegrationEvent).order_by(IntegrationEvent.id.desc()).limit(limit)))
+    return {
+        "total": len(rows),
+        "successful": sum(row.status in {"completed", "sent"} for row in rows),
+        "failed": sum(row.status == "failed" for row in rows),
+        "by_integration": {
+            integration: sum(row.integration == integration for row in rows)
+            for integration in sorted({row.integration for row in rows})
+        },
+        "recent": [
+            {
+                "id": row.id,
+                "integration": row.integration,
+                "operation": row.operation,
+                "provider": row.provider,
+                "status": row.status,
+                "attempts": row.attempts,
+                "error": row.error,
                 "created_at": row.created_at,
             }
             for row in rows[:20]

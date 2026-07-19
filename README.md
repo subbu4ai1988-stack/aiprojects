@@ -135,3 +135,21 @@ PRIVACY_SWEEP_INTERVAL_SECONDS=3600
 ```
 
 Automatic deletion is disabled by default so administrators can review the retention preview and legal holds before enabling it. The Docker admin console exposes the active policy without exposing secrets.
+## Phase 8 integration infrastructure
+
+- Resumes and interview recordings use a storage adapter with local filesystem and S3-compatible implementations. Docker uses a private MinIO bucket by default.
+- Candidate video playback and privacy exports receive HMAC-signed download links that expire after STORAGE_SIGNED_URL_SECONDS.
+- Existing local resume paths and /media recording references remain supported during migration.
+- Interview email delivery supports the local outbox or real SMTP with TLS, authentication, bounded retry attempts, and persisted delivery errors.
+- Interview answer transcription now passes through an explicit adapter boundary. Local mode uses the supplied transcript while keeping the workflow ready for a production speech-to-text adapter.
+- Storage, email, and transcription operations are recorded in the integration audit ledger and summarized in the administrator console.
+- Migration 0003 adds delivery retry/error fields and integration telemetry. Fresh and Phase 7 databases both upgrade with alembic upgrade head.
+- Frontend ESLint is configured and runs with npm run lint.
+
+Docker starts MinIO automatically. Use the existing private Docker environment file:
+
+    docker compose --env-file "$env:TEMP\recruitai-docker-local.env" up -d --build
+
+RecruitAI is available at http://localhost:8080 and the local MinIO administration console at http://localhost:9001. MinIO credentials are the MINIO_ROOT_USER and MINIO_ROOT_PASSWORD values in that environment file.
+
+For a production SMTP server, configure EMAIL_PROVIDER=smtp, EMAIL_FROM, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_USE_TLS, and SMTP_MAX_ATTEMPTS. Keep EMAIL_PROVIDER=local, TRANSCRIPTION_PROVIDER=local, and AI_PROVIDER=local until their live services are intentionally enabled. Secrets are never returned by runtime or integration-audit endpoints.

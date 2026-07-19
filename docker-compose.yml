@@ -13,6 +13,32 @@ services:
       timeout: 5s
       retries: 10
 
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-recruitai}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-recruitai}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-recruitai}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"; do sleep 2; done
+        /usr/bin/mc mb --ignore-existing "local/${S3_BUCKET}"
+    depends_on:
+      - minio
   api:
     build: .
     environment:
@@ -20,6 +46,7 @@ services:
       DATABASE_URL: postgresql+psycopg://recruitai:${POSTGRES_PASSWORD}@db:5432/recruitai
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}
       AUTO_CREATE_SCHEMA: "false"
       BOOTSTRAP_DEMO_USERS: "false"
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Set BOOTSTRAP_ADMIN_EMAIL}
@@ -35,11 +62,29 @@ services:
       CANDIDATE_RETENTION_DAYS: ${CANDIDATE_RETENTION_DAYS:-365}
       PRIVACY_AUTO_DELETE: ${PRIVACY_AUTO_DELETE:-false}
       PRIVACY_SWEEP_INTERVAL_SECONDS: ${PRIVACY_SWEEP_INTERVAL_SECONDS:-3600}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-s3}
+      STORAGE_SIGNED_URL_SECONDS: ${STORAGE_SIGNED_URL_SECONDS:-900}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-recruitai}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-recruitai}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-local}
+      EMAIL_FROM: ${EMAIL_FROM:-recruitai@localhost}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_MAX_ATTEMPTS: ${SMTP_MAX_ATTEMPTS:-3}
+      TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER:-local}
     volumes:
       - recruitai_data:/app/backend/data
     depends_on:
       db:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready')"]
       interval: 10s
@@ -55,6 +100,7 @@ services:
       DATABASE_URL: postgresql+psycopg://recruitai:${POSTGRES_PASSWORD}@db:5432/recruitai
       JWT_SECRET: ${JWT_SECRET}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:8080}
       BOOTSTRAP_DEMO_USERS: "false"
       AI_PROVIDER: ${AI_PROVIDER:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -67,6 +113,22 @@ services:
       CANDIDATE_RETENTION_DAYS: ${CANDIDATE_RETENTION_DAYS:-365}
       PRIVACY_AUTO_DELETE: ${PRIVACY_AUTO_DELETE:-false}
       PRIVACY_SWEEP_INTERVAL_SECONDS: ${PRIVACY_SWEEP_INTERVAL_SECONDS:-3600}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-s3}
+      STORAGE_SIGNED_URL_SECONDS: ${STORAGE_SIGNED_URL_SECONDS:-900}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-recruitai}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-recruitai}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-local}
+      EMAIL_FROM: ${EMAIL_FROM:-recruitai@localhost}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_MAX_ATTEMPTS: ${SMTP_MAX_ATTEMPTS:-3}
+      TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER:-local}
     volumes:
       - recruitai_data:/app/backend/data
     depends_on:
@@ -83,3 +145,4 @@ services:
 volumes:
   postgres_data:
   recruitai_data:
+  minio_data:

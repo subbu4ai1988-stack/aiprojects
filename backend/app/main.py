@@ -18,12 +18,14 @@ from .admin_models import JobAssignment
 from .ai_provider import ai_status
 from .config import settings
 from .database import Base, DATA_DIR, engine, get_db
+from .integrations import record_integration, send_email, transcribe_answer
 from .models import Application, Candidate, EmailDelivery, Feedback, Interview, Job, JobPosting, User
 from .schemas import BoardPublishIn, InterviewAnswers, JobIn, JobOut, Login, QuestionsIn
 from .phase4 import accessible_jobs, has_job_access, router as phase4_router
 from .phase6 import router as phase6_router
 from .privacy import backfill_candidate_privacy, ensure_candidate_privacy, router as privacy_router
 from .services import analyze_answers, extract_resume, generate_questions, parse_resume, rank_resume
+from .storage import router as storage_router, signed_download_url, storage
 from .tasks import enqueue_application
 
 SECRET = settings.jwt_secret
@@ -48,7 +50,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="RecruitAI API", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="RecruitAI API", version="1.5.0", lifespan=lifespan)
 
 
 def hash_password(password: str) -> str:
@@ -78,6 +80,7 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.include_router(phase4_router)
 app.include_router(phase6_router)
 app.include_router(privacy_router)
+app.include_router(storage_router)
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None, db: Session = Depends(get_db)) -> User:
@@ -182,17 +185,15 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
     suffix = Path(resume.filename or "resume").suffix.lower()
     if suffix not in {".pdf", ".docx"}:
         raise HTTPException(400, "Resume must be PDF or DOCX")
-    upload_dir = DATA_DIR / "uploads"
-    upload_dir.mkdir(exist_ok=True)
-    path = upload_dir / f"{token_urlsafe(8)}{suffix}"
     content = await resume.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(413, "Resume exceeds the configured upload limit")
     if not consent:
         raise HTTPException(400, "Candidate consent is required before processing personal data")
-    path.write_bytes(content)
+    reference = storage.put_bytes(f"uploads/{token_urlsafe(8)}{suffix}", content, resume.content_type or "application/octet-stream")
+    record_integration(db, "storage", "resume_upload", storage.provider, "completed", reference=reference, details={"bytes": len(content)})
     if settings.async_ai_jobs:
-        candidate = Candidate(name=name, email=email, phone="", resume_path=str(path), parsed_resume_data={"skills": [], "_ai_source": "queued"})
+        candidate = Candidate(name=name, email=email, phone="", resume_path=reference, parsed_resume_data={"skills": [], "_ai_source": "queued"})
         db.add(candidate)
         db.flush()
         ensure_candidate_privacy(db, candidate.id, consent)
@@ -202,10 +203,11 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
         task = enqueue_application(db, application.id)
         db.commit()
         return {"id": application.id, "match_score": 0, "summary": application.ai_ranking_summary, "processing": True, "task_id": task.id}
-    parsed = parse_resume(extract_resume(path))
+    with storage.materialize(reference) as path:
+        parsed = parse_resume(extract_resume(path))
     parsed["name"] = name
     parsed["email"] = email
-    candidate = Candidate(name=name, email=email, phone=parsed.get("phone", ""), resume_path=str(path), parsed_resume_data=parsed)
+    candidate = Candidate(name=name, email=email, phone=parsed.get("phone", ""), resume_path=reference, parsed_resume_data=parsed)
     db.add(candidate)
     db.flush()
     ensure_candidate_privacy(db, candidate.id, consent)
@@ -216,7 +218,6 @@ async def add_application(job_id: int, name: Annotated[str, Form()], email: Anno
     db.commit()
     db.refresh(application)
     return {"id": application.id, "match_score": score, "summary": summary}
-
 
 @app.get("/api/jobs/{job_id}/candidates")
 def ranked_candidates(job_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -236,7 +237,7 @@ def invite(application_id: int, db: Session = Depends(get_db), user: User = Depe
     db.add(interview)
     db.commit()
     db.refresh(interview)
-    return {"token": interview.token, "url": f"http://127.0.0.1:5173/interview/{interview.token}", "questions": interview.questions, "status": interview.status}
+    return {"token": interview.token, "url": f"{settings.public_app_url}/interview/{interview.token}", "questions": interview.questions, "status": interview.status}
 
 
 @app.get("/api/applications/{application_id}/interview")
@@ -246,7 +247,7 @@ def recruiter_interview(application_id: int, db: Session = Depends(get_db), user
         raise HTTPException(404, "Interview not found")
     if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     interview = application.interview
-    return {"token": interview.token, "url": f"http://127.0.0.1:5173/interview/{interview.token}", "questions": interview.questions, "status": interview.status}
+    return {"token": interview.token, "url": f"{settings.public_app_url}/interview/{interview.token}", "questions": interview.questions, "status": interview.status}
 
 
 @app.put("/api/applications/{application_id}/interview/questions")
@@ -271,16 +272,24 @@ def send_interview_invite(application_id: int, db: Session = Depends(get_db), us
         raise HTTPException(404, "Prepare the interview before sending an invitation")
     if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     interview = application.interview
-    url = f"http://127.0.0.1:5173/interview/{interview.token}"
+    url = f"{settings.public_app_url}/interview/{interview.token}"
     subject = f"Your interview for {application.job.title}"
     body = f"Hello {application.candidate.name},\n\nYou are invited to complete a one-way video interview for {application.job.title}.\n\nSecure interview link: {url}\n\nYou may re-record each answer once."
-    delivery = EmailDelivery(application_id=application.id, recipient=application.candidate.email, subject=subject, body=body, status="sent", provider="local-outbox")
+    result = send_email(application.candidate.email, subject, body)
+    delivery = EmailDelivery(
+        application_id=application.id, recipient=application.candidate.email, subject=subject, body=body,
+        status=result.status, provider=result.provider, attempts=result.attempts, error=result.error,
+    )
     db.add(delivery)
-    interview.status = "invited"
+    record_integration(
+        db, "email", "interview_invite", result.provider, result.status,
+        reference=application.candidate.email, attempts=result.attempts, error=result.error,
+        details={"application_id": application.id},
+    )
+    interview.status = "invited" if result.status == "sent" else "delivery_failed"
     db.commit()
     db.refresh(delivery)
-    return {"id": delivery.id, "recipient": delivery.recipient, "subject": delivery.subject, "status": delivery.status, "provider": delivery.provider, "sent_at": delivery.sent_at, "interview_url": url}
-
+    return {"id": delivery.id, "recipient": delivery.recipient, "subject": delivery.subject, "status": delivery.status, "provider": delivery.provider, "attempts": delivery.attempts, "error": delivery.error, "sent_at": delivery.sent_at, "interview_url": url}
 
 @app.get("/api/applications/{application_id}/communications")
 def list_communications(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -288,7 +297,7 @@ def list_communications(application_id: int, db: Session = Depends(get_db), user
     if not application: raise HTTPException(404, "Application not found")
     if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     rows = db.scalars(select(EmailDelivery).where(EmailDelivery.application_id == application_id).order_by(EmailDelivery.id.desc())).all()
-    return [{"id": row.id, "recipient": row.recipient, "subject": row.subject, "body": row.body, "status": row.status, "provider": row.provider, "sent_at": row.sent_at} for row in rows]
+    return [{"id": row.id, "recipient": row.recipient, "subject": row.subject, "body": row.body, "status": row.status, "provider": row.provider, "attempts": row.attempts, "error": row.error, "sent_at": row.sent_at} for row in rows]
 
 
 @app.get("/api/interviews/{token}")
@@ -319,17 +328,23 @@ async def upload_video_answer(token: str, question_index: int, video: UploadFile
         raise HTTPException(400, "A video recording is required")
     suffix = ".webm" if "webm" in content_type else ".mp4"
     filename = f"{token}-{question_index}-{attempts + 1}{suffix}"
-    path = MEDIA_DIR / filename
     content = await video.read(settings.max_upload_bytes + 1)
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(413, "Video exceeds the configured upload limit")
-    path.write_bytes(content)
-    answers[question_index] = {**answers[question_index], "question": interview.questions[question_index]["text"], "video_url": f"/media/{filename}", "recording_attempts": attempts + 1}
+    previous_reference = answers[question_index].get("video_ref") or answers[question_index].get("video_url", "")
+    reference = storage.put_bytes(f"media/{filename}", content, content_type)
+    if previous_reference:
+        storage.delete(previous_reference)
+    video_url = signed_download_url(reference)
+    answers[question_index] = {
+        **answers[question_index], "question": interview.questions[question_index]["text"],
+        "video_ref": reference, "video_url": video_url, "recording_attempts": attempts + 1,
+    }
+    record_integration(db, "storage", "video_upload", storage.provider, "completed", reference=reference, details={"bytes": len(content)})
     interview.answers = answers
     interview.status = "in_progress"
     db.commit()
-    return {"video_url": f"/media/{filename}", "recording_attempts": attempts + 1, "remaining_rerecords": 1 - attempts}
-
+    return {"video_url": video_url, "recording_attempts": attempts + 1, "remaining_rerecords": 1 - attempts}
 
 @app.post("/api/interviews/{token}/answers")
 def submit_answers(token: str, payload: InterviewAnswers, db: Session = Depends(get_db)):
@@ -340,7 +355,13 @@ def submit_answers(token: str, payload: InterviewAnswers, db: Session = Depends(
     submitted = []
     for index, answer in enumerate(payload.answers):
         video_data = existing[index] if index < len(existing) else {}
-        submitted.append({**video_data, **answer.model_dump()})
+        transcription = transcribe_answer(video_data.get("video_ref", video_data.get("video_url", "")), answer.answer)
+        submitted.append({**video_data, **answer.model_dump(), "answer": transcription.transcript, "transcription_provider": transcription.provider})
+        record_integration(
+            db, "transcription", "interview_answer", transcription.provider, transcription.status,
+            reference=video_data.get("video_ref", ""), error=transcription.error,
+            details={"interview_id": interview.id, "question_index": index},
+        )
     interview.answers = submitted
     interview.status = "analyzed"
     report, recommendation, confidence = analyze_answers(interview.answers, interview.application.job.description)
@@ -350,7 +371,6 @@ def submit_answers(token: str, payload: InterviewAnswers, db: Session = Depends(
     db.commit()
     return {"status": "completed"}
 
-
 @app.get("/api/applications/{application_id}/feedback")
 def get_feedback(application_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     application = db.get(Application, application_id)
@@ -358,4 +378,11 @@ def get_feedback(application_id: int, db: Session = Depends(get_db), user: User 
         raise HTTPException(404, "Feedback not available")
     if not has_job_access(db, user, application.job_id): raise HTTPException(403, "Job access denied")
     f = application.interview.feedback
-    return {"report": f.ai_generated_report, "recommendation": f.recommendation, "confidence_score": f.confidence_score, "answers": application.interview.answers}
+    answers = []
+    for answer in application.interview.answers or []:
+        item = dict(answer)
+        reference = item.get("video_ref") or item.get("video_url", "")
+        if reference:
+            item["video_url"] = signed_download_url(reference)
+        answers.append(item)
+    return {"report": f.ai_generated_report, "recommendation": f.recommendation, "confidence_score": f.confidence_score, "answers": answers}

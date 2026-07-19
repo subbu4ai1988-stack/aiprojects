@@ -27,6 +27,7 @@ class Settings:
     database_url: str
     jwt_secret: str
     access_token_minutes: int
+    public_app_url: str
     cors_origins: tuple[str, ...]
     log_level: str
     auto_create_schema: bool
@@ -48,6 +49,22 @@ class Settings:
     candidate_retention_days: int
     privacy_auto_delete: bool
     privacy_sweep_interval_seconds: int
+    storage_provider: str
+    storage_signed_url_seconds: int
+    s3_endpoint_url: str
+    s3_region: str
+    s3_bucket: str
+    s3_access_key_id: str
+    s3_secret_access_key: str
+    email_provider: str
+    email_from: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_use_tls: bool
+    smtp_max_attempts: int
+    transcription_provider: str
 
     @property
     def is_production(self) -> bool:
@@ -66,6 +83,7 @@ class Settings:
             database_url=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL),
             jwt_secret=os.getenv("JWT_SECRET", DEVELOPMENT_SECRET),
             access_token_minutes=_integer("ACCESS_TOKEN_MINUTES", 480, 5),
+            public_app_url=os.getenv("PUBLIC_APP_URL", "http://127.0.0.1:5173").strip().rstrip("/"),
             cors_origins=origins,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             auto_create_schema=_boolean("AUTO_CREATE_SCHEMA", environment != "production"),
@@ -87,6 +105,22 @@ class Settings:
             candidate_retention_days=_integer("CANDIDATE_RETENTION_DAYS", 365, 1),
             privacy_auto_delete=_boolean("PRIVACY_AUTO_DELETE", False),
             privacy_sweep_interval_seconds=_integer("PRIVACY_SWEEP_INTERVAL_SECONDS", 3600, 60),
+            storage_provider=os.getenv("STORAGE_PROVIDER", "local").strip().lower(),
+            storage_signed_url_seconds=_integer("STORAGE_SIGNED_URL_SECONDS", 900, 60),
+            s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", "").strip(),
+            s3_region=os.getenv("S3_REGION", "us-east-1").strip(),
+            s3_bucket=os.getenv("S3_BUCKET", "recruitai").strip(),
+            s3_access_key_id=os.getenv("S3_ACCESS_KEY_ID", "").strip(),
+            s3_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY", ""),
+            email_provider=os.getenv("EMAIL_PROVIDER", "local").strip().lower(),
+            email_from=os.getenv("EMAIL_FROM", "recruitai@localhost").strip(),
+            smtp_host=os.getenv("SMTP_HOST", "").strip(),
+            smtp_port=_integer("SMTP_PORT", 587, 1),
+            smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
+            smtp_password=os.getenv("SMTP_PASSWORD", ""),
+            smtp_use_tls=_boolean("SMTP_USE_TLS", True),
+            smtp_max_attempts=_integer("SMTP_MAX_ATTEMPTS", 3, 1),
+            transcription_provider=os.getenv("TRANSCRIPTION_PROVIDER", "local").strip().lower(),
         )
         settings.validate()
         return settings
@@ -94,6 +128,18 @@ class Settings:
     def validate(self) -> None:
         if self.ai_provider not in {"local", "openai"}:
             raise ValueError("AI_PROVIDER must be local or openai")
+        if not self.public_app_url.startswith(("http://", "https://")):
+            raise ValueError("PUBLIC_APP_URL must be an http or https URL")
+        if self.storage_provider not in {"local", "s3"}:
+            raise ValueError("STORAGE_PROVIDER must be local or s3")
+        if self.storage_provider == "s3" and not all((self.s3_bucket, self.s3_access_key_id, self.s3_secret_access_key)):
+            raise ValueError("S3 storage requires S3_BUCKET, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY")
+        if self.email_provider not in {"local", "smtp"}:
+            raise ValueError("EMAIL_PROVIDER must be local or smtp")
+        if self.email_provider == "smtp" and not all((self.email_from, self.smtp_host)):
+            raise ValueError("SMTP email requires EMAIL_FROM and SMTP_HOST")
+        if self.transcription_provider != "local":
+            raise ValueError("TRANSCRIPTION_PROVIDER must be local until an external adapter is configured")
         if bool(self.bootstrap_admin_email) != bool(self.bootstrap_admin_password):
             raise ValueError("BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD must be set together")
         if self.bootstrap_admin_password and len(self.bootstrap_admin_password) < 12:
@@ -109,6 +155,7 @@ class Settings:
     def safe_summary(self) -> dict:
         return {
             "environment": self.app_env,
+            "public_app_url": self.public_app_url,
             "database": "postgresql" if self.database_url.startswith("postgresql") else "sqlite",
             "auto_create_schema": self.auto_create_schema,
             "demo_users": self.bootstrap_demo_users,
@@ -122,6 +169,10 @@ class Settings:
             "candidate_retention_days": self.candidate_retention_days,
             "privacy_auto_delete": self.privacy_auto_delete,
             "privacy_sweep_interval_seconds": self.privacy_sweep_interval_seconds,
+            "storage_provider": self.storage_provider,
+            "storage_signed_url_seconds": self.storage_signed_url_seconds,
+            "email_provider": self.email_provider,
+            "transcription_provider": self.transcription_provider,
         }
 
 

@@ -1,6 +1,5 @@
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +8,7 @@ from .config import settings
 from .database import SessionLocal
 from .models import AITask, Application
 from .services import extract_resume, parse_resume, rank_resume
+from .storage import storage
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,8 @@ def _process_application(db: Session, task: AITask) -> dict:
     if not application:
         raise RuntimeError("Application no longer exists")
     candidate = application.candidate
-    parsed = parse_resume(extract_resume(Path(candidate.resume_path)))
+    with storage.materialize(candidate.resume_path) as path:
+        parsed = parse_resume(extract_resume(path))
     parsed["name"] = candidate.name
     parsed["email"] = candidate.email
     candidate.phone = parsed.get("phone", "")

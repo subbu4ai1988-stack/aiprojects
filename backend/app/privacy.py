@@ -1,17 +1,17 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import DATA_DIR, settings
+from .config import settings
 from .database import SessionLocal, get_db
 from .models import AITask, Application, Candidate, EmailDelivery, Feedback, Interview, User
 from .phase4 import require_admin
 from .privacy_models import CandidatePrivacy, PrivacyAuditLog
+from .storage import signed_download_url, storage
 
 router = APIRouter(prefix="/api/admin/privacy", tags=["privacy"])
 
@@ -67,16 +67,16 @@ def audit(db: Session, action: str, email: str, actor_email: str = "system", **d
     db.add(PrivacyAuditLog(actor_email=actor_email, action=action, subject_ref=subject_ref(email), details=details))
 
 
-def _safe_remove(path: Path) -> bool:
-    try:
-        resolved = path.resolve()
-        if not resolved.is_relative_to(DATA_DIR.resolve()) or not resolved.is_file():
-            return False
-        resolved.unlink()
-        return True
-    except OSError:
-        return False
 
+def _export_answers(answers: list) -> list:
+    exported = []
+    for answer in answers or []:
+        item = dict(answer)
+        reference = item.get("video_ref") or item.get("video_url", "")
+        if reference:
+            item["video_url"] = signed_download_url(reference)
+        exported.append(item)
+    return exported
 
 def _candidate_export(db: Session, candidate: Candidate) -> dict:
     applications = list(db.scalars(select(Application).where(Application.candidate_id == candidate.id)))
@@ -89,6 +89,7 @@ def _candidate_export(db: Session, candidate: Candidate) -> dict:
             "email": candidate.email,
             "phone": candidate.phone,
             "parsed_resume_data": candidate.parsed_resume_data,
+            "resume_download_url": signed_download_url(candidate.resume_path) if candidate.resume_path else "",
         },
         "privacy": {
             "consent_status": privacy.consent_status if privacy else "unknown",
@@ -107,7 +108,7 @@ def _candidate_export(db: Session, candidate: Candidate) -> dict:
                 "interview": {
                     "status": application.interview.status,
                     "questions": application.interview.questions,
-                    "answers": application.interview.answers,
+                    "answers": _export_answers(application.interview.answers),
                     "feedback": {
                         "report": application.interview.feedback.ai_generated_report,
                         "recommendation": application.interview.feedback.recommendation,
@@ -115,7 +116,7 @@ def _candidate_export(db: Session, candidate: Candidate) -> dict:
                     } if application.interview and application.interview.feedback else None,
                 } if application.interview else None,
                 "communications": [
-                    {"recipient": delivery.recipient, "subject": delivery.subject, "status": delivery.status, "sent_at": delivery.sent_at}
+                    {"recipient": delivery.recipient, "subject": delivery.subject, "status": delivery.status, "provider": delivery.provider, "attempts": delivery.attempts, "error": delivery.error, "sent_at": delivery.sent_at}
                     for delivery in db.scalars(select(EmailDelivery).where(EmailDelivery.application_id == application.id))
                 ],
             }
@@ -128,7 +129,7 @@ def delete_candidate_data(db: Session, candidate: Candidate, actor_email: str, r
     email = candidate.email
     applications = list(db.scalars(select(Application).where(Application.candidate_id == candidate.id)))
     application_ids = {application.id for application in applications}
-    files_removed = int(_safe_remove(Path(candidate.resume_path))) if candidate.resume_path else 0
+    files_removed = int(storage.delete(candidate.resume_path)) if candidate.resume_path else 0
     for task in db.scalars(select(AITask).where(AITask.task_type == "process_application")):
         if int((task.payload or {}).get("application_id", 0)) in application_ids:
             db.delete(task)
@@ -138,9 +139,9 @@ def delete_candidate_data(db: Session, candidate: Candidate, actor_email: str, r
         interview = application.interview
         if interview:
             for answer in interview.answers or []:
-                media_url = answer.get("video_url", "")
-                if media_url:
-                    files_removed += int(_safe_remove(DATA_DIR / "media" / Path(media_url).name))
+                media_reference = answer.get("video_ref") or answer.get("video_url", "")
+                if media_reference:
+                    files_removed += int(storage.delete(media_reference))
             if interview.feedback:
                 db.delete(interview.feedback)
             db.delete(interview)

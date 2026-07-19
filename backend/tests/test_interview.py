@@ -41,4 +41,4 @@ def test_edit_record_rerecord_and_feedback_workflow():
     feedback=client.get(f'/api/applications/{application_id}/feedback',headers=headers)
     assert feedback.status_code==200
     assert feedback.json()['recommendation'] in {'select','consider','reject'}
-    assert feedback.json()['answers'][0]['video_url'].startswith('/media/')
+    assert feedback.json()['answers'][0]['video_url'].startswith('/api/storage/download?')

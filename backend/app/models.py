@@ -93,6 +93,8 @@ class EmailDelivery(Base):
     body: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="sent")
     provider: Mapped[str] = mapped_column(String(60), default="local-outbox")
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    error: Mapped[str] = mapped_column(String(500), default="")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class AIRequestLog(Base):
