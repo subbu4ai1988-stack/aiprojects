@@ -65,6 +65,12 @@ class Settings:
     smtp_use_tls: bool
     smtp_max_attempts: int
     transcription_provider: str
+    runpod_api_key: str
+    runpod_endpoint_id: str
+    runpod_base_url: str
+    runpod_timeout_seconds: float
+    runpod_wait_ms: int
+    runpod_transcription_language: str
 
     @property
     def is_production(self) -> bool:
@@ -121,6 +127,12 @@ class Settings:
             smtp_use_tls=_boolean("SMTP_USE_TLS", True),
             smtp_max_attempts=_integer("SMTP_MAX_ATTEMPTS", 3, 1),
             transcription_provider=os.getenv("TRANSCRIPTION_PROVIDER", "local").strip().lower(),
+            runpod_api_key=os.getenv("RUNPOD_API_KEY", "").strip(),
+            runpod_endpoint_id=os.getenv("RUNPOD_ENDPOINT_ID", "").strip(),
+            runpod_base_url=os.getenv("RUNPOD_BASE_URL", "https://api.runpod.ai/v2").strip().rstrip("/"),
+            runpod_timeout_seconds=float(os.getenv("RUNPOD_TIMEOUT_SECONDS", "150")),
+            runpod_wait_ms=_integer("RUNPOD_WAIT_MS", 120000, 1000),
+            runpod_transcription_language=os.getenv("RUNPOD_TRANSCRIPTION_LANGUAGE", "").strip(),
         )
         settings.validate()
         return settings
@@ -138,8 +150,16 @@ class Settings:
             raise ValueError("EMAIL_PROVIDER must be local or smtp")
         if self.email_provider == "smtp" and not all((self.email_from, self.smtp_host)):
             raise ValueError("SMTP email requires EMAIL_FROM and SMTP_HOST")
-        if self.transcription_provider != "local":
-            raise ValueError("TRANSCRIPTION_PROVIDER must be local until an external adapter is configured")
+        if self.transcription_provider not in {"local", "runpod"}:
+            raise ValueError("TRANSCRIPTION_PROVIDER must be local or runpod")
+        if self.transcription_provider == "runpod" and not all((self.runpod_api_key, self.runpod_endpoint_id)):
+            raise ValueError("Runpod transcription requires RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID")
+        if self.transcription_provider == "runpod" and not self.public_app_url.startswith("https://"):
+            raise ValueError("Runpod transcription requires a public HTTPS PUBLIC_APP_URL")
+        if not self.runpod_base_url.startswith(("http://", "https://")):
+            raise ValueError("RUNPOD_BASE_URL must be an http or https URL")
+        if self.runpod_timeout_seconds <= 0:
+            raise ValueError("RUNPOD_TIMEOUT_SECONDS must be positive")
         if bool(self.bootstrap_admin_email) != bool(self.bootstrap_admin_password):
             raise ValueError("BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD must be set together")
         if self.bootstrap_admin_password and len(self.bootstrap_admin_password) < 12:
@@ -173,6 +193,8 @@ class Settings:
             "storage_signed_url_seconds": self.storage_signed_url_seconds,
             "email_provider": self.email_provider,
             "transcription_provider": self.transcription_provider,
+            "runpod_configured": bool(self.runpod_api_key and self.runpod_endpoint_id),
+            "runpod_wait_ms": min(self.runpod_wait_ms, 300000),
         }
 
 

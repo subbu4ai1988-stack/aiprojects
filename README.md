@@ -153,3 +153,23 @@ Docker starts MinIO automatically. Use the existing private Docker environment f
 RecruitAI is available at http://localhost:8080 and the local MinIO administration console at http://localhost:9001. MinIO credentials are the MINIO_ROOT_USER and MINIO_ROOT_PASSWORD values in that environment file.
 
 For a production SMTP server, configure EMAIL_PROVIDER=smtp, EMAIL_FROM, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_USE_TLS, and SMTP_MAX_ATTEMPTS. Keep EMAIL_PROVIDER=local, TRANSCRIPTION_PROVIDER=local, and AI_PROVIDER=local until their live services are intentionally enabled. Secrets are never returned by runtime or integration-audit endpoints.
+
+## Phase 9 Runpod GPU transcription
+
+- RecruitAI can now submit private interview recordings to an optional Runpod Serverless endpoint running Faster-Whisper on a GPU.
+- The API sends only a short-lived signed media URL and an optional transcript hint. Runpod credentials are never returned by runtime or audit endpoints.
+- The Runpod client uses the authenticated `/runsync` queue endpoint with bounded wait and request timeouts.
+- Failed, timed-out, or malformed Runpod jobs are recorded in the integration audit ledger; the candidate's typed transcript remains available as a safe fallback.
+- The worker rejects HTTP, localhost, private-network, and credential-bearing media URLs by default to reduce server-side request forgery risk.
+- Local development remains unchanged with `TRANSCRIPTION_PROVIDER=local`, so no Runpod charge or GPU is needed while implementing other features.
+
+The deployable worker, job contract, image build commands, endpoint settings, and production activation checklist are in `runpod_worker/README.md`. The key activation values are:
+
+```dotenv
+TRANSCRIPTION_PROVIDER=runpod
+RUNPOD_API_KEY=your_runpod_api_key
+RUNPOD_ENDPOINT_ID=your_serverless_endpoint_id
+PUBLIC_APP_URL=https://your-public-recruitai-domain.example
+```
+
+Do not enable Runpod while `PUBLIC_APP_URL` points to localhost: the remote worker must be able to reach the signed RecruitAI download route over public HTTPS. Build and test the rest of RecruitAI locally first, publish the worker image when ready, and then enable the provider in the deployment environment.

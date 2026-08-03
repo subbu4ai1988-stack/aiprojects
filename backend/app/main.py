@@ -50,7 +50,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="RecruitAI API", version="1.5.0", lifespan=lifespan)
+app = FastAPI(title="RecruitAI API", version="1.6.0", lifespan=lifespan)
 
 
 def hash_password(password: str) -> str:
@@ -356,7 +356,7 @@ def submit_answers(token: str, payload: InterviewAnswers, db: Session = Depends(
     for index, answer in enumerate(payload.answers):
         video_data = existing[index] if index < len(existing) else {}
         transcription = transcribe_answer(video_data.get("video_ref", video_data.get("video_url", "")), answer.answer)
-        submitted.append({**video_data, **answer.model_dump(), "answer": transcription.transcript, "transcription_provider": transcription.provider})
+        submitted.append({**video_data, **answer.model_dump(), "answer": transcription.transcript, "transcription_provider": transcription.provider, "transcription_status": transcription.status})
         record_integration(
             db, "transcription", "interview_answer", transcription.provider, transcription.status,
             reference=video_data.get("video_ref", ""), error=transcription.error,

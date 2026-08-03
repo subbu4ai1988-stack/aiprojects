@@ -52,6 +52,8 @@ def test_runtime_summary_is_secret_safe_and_integration_audit_is_admin_only():
     assert summary["email_provider"] == "local"
     assert "s3_secret_access_key" not in summary
     assert "smtp_password" not in summary
+    assert "runpod_api_key" not in summary
+    assert "runpod_endpoint_id" not in summary
 
     assert client.get("/api/admin/integrations").status_code == 401
     response = client.get("/api/admin/integrations", headers=admin_auth())

@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .integration_models import IntegrationEvent
+from .runpod_client import RunpodClient, RunpodError
+from .storage import signed_download_url
 
 
 @dataclass(frozen=True)
@@ -80,10 +82,45 @@ def send_email(recipient: str, subject: str, body: str) -> DeliveryResult:
 
 
 def transcribe_answer(video_reference: str, supplied_text: str) -> TranscriptionResult:
-    # The local adapter intentionally trusts the candidate's typed transcript.
-    # A production speech-to-text adapter can implement this same contract.
-    return TranscriptionResult(
-        transcript=supplied_text.strip(),
-        provider="local-text",
-        status="completed",
+    transcript_hint = supplied_text.strip()
+    if settings.transcription_provider == "local":
+        return TranscriptionResult(
+            transcript=transcript_hint,
+            provider="local-text",
+            status="completed",
+        )
+
+    if not video_reference:
+        return TranscriptionResult(
+            transcript=transcript_hint,
+            provider="runpod-faster-whisper",
+            status="failed",
+            error="No interview media reference was supplied",
+        )
+
+    media_url = f"{settings.public_app_url}{signed_download_url(video_reference)}"
+    client = RunpodClient(
+        settings.runpod_api_key,
+        settings.runpod_endpoint_id,
+        base_url=settings.runpod_base_url,
+        timeout_seconds=settings.runpod_timeout_seconds,
+        wait_ms=settings.runpod_wait_ms,
     )
+    try:
+        output = client.transcribe(
+            media_url,
+            transcript_hint,
+            settings.runpod_transcription_language,
+        )
+        return TranscriptionResult(
+            transcript=output["text"].strip() or transcript_hint,
+            provider=str(output.get("provider", "runpod-faster-whisper")),
+            status="completed",
+        )
+    except RunpodError as exc:
+        return TranscriptionResult(
+            transcript=transcript_hint,
+            provider="runpod-faster-whisper",
+            status="failed",
+            error=str(exc),
+        )
